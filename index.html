@@ -156,13 +156,23 @@
 
         // Convert audio to WAV using FFmpeg
         async function convertToWav(audioBlob) {
-            if (!ffmpeg.isLoaded()) await ffmpeg.load();
-            const inputName = 'input_audio';
-            const outputName = 'output.wav';
-            ffmpeg.FS('writeFile', inputName, await fetchFile(audioBlob));
-            await ffmpeg.run('-i', inputName, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', outputName);
-            const output = ffmpeg.FS('readFile', outputName);
-            return new Blob([output.buffer], { type: 'audio/wav' });
+            try {
+                console.log('Converting audio, size:', audioBlob.size);
+                if (!ffmpeg.isLoaded()) {
+                    console.log('Loading FFmpeg...');
+                    await ffmpeg.load();
+                }
+                const inputName = 'input_audio';
+                const outputName = 'output.wav';
+                ffmpeg.FS('writeFile', inputName, await fetchFile(audioBlob));
+                await ffmpeg.run('-i', inputName, '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', outputName);
+                const output = ffmpeg.FS('readFile', outputName);
+                console.log('Converted WAV size:', output.length);
+                return new Blob([output.buffer], { type: 'audio/wav' });
+            } catch (error) {
+                console.error('FFmpeg error:', error);
+                throw new Error('Failed to convert audio to WAV');
+            }
         }
 
         // Transcribe audio using Hugging Face API
@@ -170,12 +180,14 @@
             setStatus('Transcribing...');
             try {
                 const wavBlob = await convertToWav(audioBlob);
+                const formData = new FormData();
+                formData.append('file', wavBlob, 'audio.wav');
                 const response = await fetch(HF_API_URL, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${HF_API_TOKEN}`
                     },
-                    body: wavBlob
+                    body: formData
                 });
                 const result = await response.json();
                 if (result.error) {
@@ -187,7 +199,7 @@
             } catch (error) {
                 console.error('Transcription error:', error);
                 setStatus('Error during transcription');
-                document.getElementById('transcriptionOutput').value = 'Error: Could not transcribe audio';
+                document.getElementById('transcriptionOutput').value = `Error: ${error.message}`;
             }
         }
 
@@ -199,6 +211,10 @@
                 return;
             }
             const file = input.files[0];
+            if (file.size > 10 * 1024 * 1024) { // Limit to 10MB
+                setStatus('File too large. Please upload a file under 10MB.');
+                return;
+            }
             await transcribeAudio(file);
         }
     </script>
