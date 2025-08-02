@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Transcription</title>
+    <!-- Including Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Styling for transcription content with a fade effect at the bottom */
+        .max-h-initial {
+            max-height: 300px;
+        }
+        #transcription_content.max-h-initial::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: linear-gradient(to bottom, transparent, #f3f4f6);
+            pointer-events: none;
+        }
+        #transcription_content {
+            position: relative;
+        }
+    </style>
+    <script>
+        // Updates model scale options based on selected language
+        function updateModelOptions() {
+            const language = document.getElementById('language').value;
+            const modelScale = document.getElementById('model_scale');
+            modelScale.innerHTML = ''; // Clear existing options
+            const options = language === 'english-only' 
+                ? ['tiny.en', 'base.en', 'small.en', 'medium.en']
+                : ['tiny', 'base', 'small', 'medium', 'large', 'large-v1', 'large-v2'];
+            options.forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt;
+                option.text = opt;
+                if (opt === (language === 'english-only' ? 'medium.en' : 'medium')) {
+                    option.selected = true; // Set default selection
+                }
+                modelScale.appendChild(option);
+            });
+        }
+
+        // Handles drag-over event for the file drop zone
+        function handleDragOver(e) {
+            e.preventDefault();
+            document.getElementById('drop_zone').classList.add('bg-gray-200');
+        }
+
+        // Handles drag-leave event for the file drop zone
+        function handleDragLeave(e) {
+            document.getElementById('drop_zone').classList.remove('bg-gray-200');
+        }
+
+        // Handles file drop event, updating the file input and display
+        function handleDrop(e) {
+            e.preventDefault();
+            document.getElementById('drop_zone').classList.remove('bg-gray-200');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                document.getElementById('audio_file').files = files;
+                document.getElementById('file_name').textContent = files[0].name;
+            }
+        }
+
+        // Triggers the hidden file input when drop zone is clicked
+        function triggerFileInput() {
+            document.getElementById('audio_file').click();
+        }
+
+        // Submits the form and processes the transcription
+        async function submitForm(e) {
+            e.preventDefault();
+            const form = document.getElementById('transcription_form');
+            const formData = new FormData(form);
+            const submitButton = document.getElementById('submit_button');
+            submitButton.disabled = true;
+            submitButton.textContent = 'Processing...'; // Update button text during processing
+
+            try {
+                // Send form data to server
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                
+                // Log dialogue_summary_paragraphs for debugging
+                console.log('dialogue_summary_paragraphs:', result.dialogue_summary_paragraphs);
+                
+                if (response.ok) {
+                    // Build the output HTML for displaying transcription results
+                    let output = `
+                        <div class="mb-8 p-4 border border-gray-300 rounded font-sans">
+                            <!-- Audio player for the uploaded file -->
+                            <audio id="audio-player" controls class="mb-4 w-full">
+                                <source src="/audio/${result.audio_path.split('/').pop()}" type="audio/mpeg">
+                                Your browser does not support the audio element.
+                            </audio>
+                            <p><strong>Audio:</strong> ${result.audio_filename}</p>
+                            <p><strong>Date and Time:</strong> ${result.date_time}</p>
+                            <p><strong>Processing Time:</strong> ${result.formatted_processing_time}</p>
+                            <p><strong>Transcription Type:</strong> ${result.transcription_type.replace('_', ' ')}</p>
+                            <p><strong>Language:</strong> ${result.language.replace('-', ' ')}</p>
+                            <p><strong>Model Scale:</strong> ${result.model_scale}</p>
+                            <p><strong>Total Tokens:</strong> ${result.token_count}</p>
+                    `;
+                    
+                    // Add number of speakers if transcription includes speakers
+                    if (result.transcription_type === 'with_speakers') {
+                        output += `<p><strong>Number of Speakers:</strong> ${result.number_of_speakers}</p>`;
+                    }
+                    
+                    // Display transcription content
+                    output += `
+                        <div id="transcription" class="mt-4">
+                            <h3 class="text-lg font-bold text-center uppercase">${
+                                result.transcription_type === 'with_speakers' 
+                                ? 'Transcription with Speakers' 
+                                : 'Basic Transcription'
+                            }</h3>
+                            <div id="transcription_content" class="max-h-initial overflow-hidden transition-all duration-300">
+                    `;
+                    
+                    // Handle transcription without speakers
+                    if (result.transcription_type === 'without_speakers') {
+                        output += `<p class="text-justify">${result.basic_transcription}</p>`;
+                    } else {
+                        // Handle transcription with speakers
+                        result.transcription_with_speakers.forEach(dialogue => {
+                            output += `<p><strong>${dialogue[0]}</strong></p>`;
+                            output += `<p class="text-justify">${dialogue[1]}</p>`;
+                            output += `<p class="mb-4"></p>`;
+                        });
+                    }
+                    
+                    // Add toggle button for expanding/collapsing transcription
+                    output += `
+                            </div>
+                            <button id="toggle_transcription" class="mt-2 text-blue-500 hover:underline focus:outline-none hidden">Show More</button>
+                        </div>
+                    `;
+                    
+                    // Display summary if available
+                    if (result.basic_summary || result.dialogue_summary) {
+                        output += `<h3 class="text-lg font-bold mt-4 text-center uppercase">Final Summary</h3>`;
+                        const paragraphs = result.transcription_type === 'with_speakers' 
+                            ? result.dialogue_summary_paragraphs 
+                            : result.basic_summary_paragraphs;
+                        paragraphs.forEach(paragraph => {
+                            output += `<p class="text-justify mb-4">${paragraph}</p>`;
+                        });
+                    }
+                    
+                    // Display chunk details for basic transcription
+                    if (result.transcription_type === 'without_speakers' && result.basic_chunks && result.basic_chunks.length > 0) {
+                        output += `<h3 class="text-lg font-bold mt-4 text-center uppercase">Chunk Details</h3>`;
+                        result.basic_chunks.forEach((chunk, index) => {
+                            const tokenCount = result.basic_chunk_token_counts[index];
+                            output += `<p><strong>Chunk ${index + 1}:</strong> ${tokenCount} tokens</p>`;
+                            output += `<p class="text-justify">${chunk}</p>`;
+                            output += `<p><strong>Summary of Chunk ${index + 1}</strong></p>`;
+                            output += `<p class="text-justify">${result.basic_chunk_summaries[index]}</p>`;
+                            output += `<p class="mb-4"></p>`;
+                        });
+                    } 
+                    // Display chunk details for transcription with speakers
+                    else if (result.transcription_type === 'with_speakers' && result.dialogue_chunks && result.dialogue_chunks.length > 0) {
+                        output += `<h3 class="text-lg font-bold mt-4 text-center uppercase">Chunk Details</h3>`;
+                        result.dialogue_chunks.forEach((chunk, index) => {
+                            const tokenCount = result.dialogue_chunk_token_counts[index];
+                            output += `<p><strong>Chunk ${index + 1}:</strong> ${tokenCount} tokens</p>`;
+                            chunk.forEach(dialogue => {
+                                output += `<p><strong>${dialogue[0]}</strong></p>`;
+                                output += `<p class="text-justify">${dialogue[1]}</p>`;
+                                output += `<p class="mb-4"></p>`;
+                            });
+                            output += `<p class="mb-4"></p>`;
+                            output += `<p><strong>Summary of Chunk ${index + 1}</strong></p>`;
+                            output += `<p class="text-justify">${result.dialogue_chunk_summaries[index]}</p>`;
+                            output += `<p class="mb-4"></p>`;
+                        });
+                    }
+                    
+                    // Add download link for DOCX file
+                    output += `<a href="/download/${result.doc_path.split('/').pop()}" class="mt-4 inline-block bg-blue-500 text-white px-4 py-2 rounded">Download DOCX</a>`;
+                    output += `</div>`;
+                    
+                    // Insert results into the DOM
+                    const resultsDiv = document.getElementById('results');
+                    resultsDiv.innerHTML = ''; // Clear previous results
+                    resultsDiv.insertAdjacentHTML('afterbegin', output);
+                    
+                    // Handle transcription toggle for long content
+                    const transcriptionContent = document.getElementById('transcription_content');
+                    const toggleButton = document.getElementById('toggle_transcription');
+                    if (transcriptionContent.scrollHeight > 300) {
+                        toggleButton.classList.remove('hidden');
+                    }
+                    toggleButton.onclick = function () {
+                        if (transcriptionContent.classList.contains('max-h-initial')) {
+                            transcriptionContent.classList.remove('max-h-initial', 'overflow-hidden');
+                            toggleButton.textContent = 'Show Less';
+                        } else {
+                            transcriptionContent.classList.add('max-h-initial', 'overflow-hidden');
+                            toggleButton.textContent = 'Show More';
+                        }
+                    };
+                } else {
+                    // Display error message if response is not OK
+                    const resultsDiv = document.getElementById('results');
+                    resultsDiv.innerHTML = ''; // Clear previous results
+                    resultsDiv.insertAdjacentHTML('afterbegin', `<div class="mb-8 p-4 border border-gray-300 rounded font-sans"><p class="text-red-500">Error: ${result.error}</p></div>`);
+                }
+            } catch (error) {
+                // Handle fetch or other errors
+                const resultsDiv = document.getElementById('results');
+                resultsDiv.innerHTML = ''; // Clear previous results
+                resultsDiv.insertAdjacentHTML('afterbegin', `<div class="mb-8 p-4 border border-gray-300 rounded font-sans"><p class="text-red-500">Error: ${error.message}</p></div>`);
+            } finally {
+                // Re-enable submit button after processing
+                submitButton.disabled = false;
+                submitButton.textContent = 'Transcribe';
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <!-- Main container for the application -->
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-4">Audio Transcription</h1>
+        <!-- Form for uploading audio and selecting transcription options -->
+        <form id="transcription_form" onsubmit="submitForm(event)" enctype="multipart/form-data">
+            <!-- File upload section with drag-and-drop support -->
+            <div class="mb-4">
+                <div id="drop_zone" class="border-2 border-dashed border-gray-400 p-4 text-center cursor-pointer"
+                     ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)" onclick="triggerFileInput()">
+                    <p>Drag and drop audio file here or click to select</p>
+                    <input type="file" id="audio_file" name="audio_file" accept="audio/*" class="hidden"
+                           onchange="document.getElementById('file_name').textContent = this.files[0].name">
+                    <p id="file_name" class="mt-2"></p>
+                </div>
+            </div>
+            <!-- Transcription type selection -->
+            <div class="mb-4">
+                <label class="block mb-2 font-bold">Transcription Type:</label>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center">
+                        <input type="radio" id="without_speakers" name="transcription_type" value="without_speakers" class="mr-2 accent-blue-500">
+                        <label for="without_speakers" class="flex items-center">
+                            <svg class="w-5 h-5 mr-1 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            Without Speakers
+                        </label>
+                    </div>
+                    <div class="flex items-center">
+                        <input type="radio" id="with_speakers" name="transcription_type" value="with_speakers" checked class="mr-2 accent-blue-500">
+                        <label for="with_speakers" class="flex items-center">
+                            <svg class="w-5 h-5 mr-1 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path>
+                            </svg>
+                            With Speakers
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <!-- Language selection dropdown -->
+            <div class="mb-4">
+                <label class="block mb-2 font-bold">Language:</label>
+                <select id="language" name="language" onchange="updateModelOptions()" class="border p-2 rounded w-full">
+                    <option value="english-only">English Only</option>
+                    <option value="multilingual">Multilingual</option>
+                </select>
+            </div>
+            <!-- Model scale selection dropdown -->
+            <div class="mb-4">
+                <label class="block mb-2 font-bold">Model Scale:</label>
+                <select id="model_scale" name="model_scale" class="border p-2 rounded w-full">
+                    <option value="medium.en">medium.en</option>
+                    <option value="tiny.en">tiny.en</option>
+                    <option value="base.en">base.en</option>
+                    <option value="small.en">small.en</option>
+                </select>
+            </div>
+            <!-- Option to include summary -->
+            <div class="mb-4">
+                <label class="flex items-center font-bold">
+                    <input type="checkbox" name="include_summary" value="true" class="mr-2 accent-blue-500">
+                    Include Summary
+                </label>
+            </div>
+            <!-- Submit button for transcription -->
+            <button id="submit_button" type="submit" class="bg-blue-500 text-white px-4 py-2 rounded">Transcribe</button>
+        </form>
+        <!-- Container for displaying transcription results -->
+        <div id="results" class="mt-8"></div>
+    </div>
+</body>
+</html>
